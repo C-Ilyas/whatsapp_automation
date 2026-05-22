@@ -1,0 +1,9 @@
+myenv/
+wa_session/
+logs/
+__pycache__/
+*.pyc
+.env
+.git/
+.gitignore
+*.md

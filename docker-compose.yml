@@ -1,0 +1,20 @@
+services:
+  whatsapp:
+    build: .
+    image: whatsapp-ai-outreach:latest
+    container_name: whatsapp-ai-outreach
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    environment:
+      WA_BROWSER_CHANNEL: chromium
+      WA_FORCE_HEADLESS: "true"
+    volumes:
+      - ./wa_session:/app/wa_session
+      - ./logs:/app/logs
+      - ./app.py:/app/app.py
+      - ./agent.py:/app/agent.py
+      - ./send_whatsapp.py:/app/send_whatsapp.py
+    shm_size: "1gb"
+    restart: unless-stopped

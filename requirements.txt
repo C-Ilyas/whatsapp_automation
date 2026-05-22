@@ -1,0 +1,6 @@
+playwright==1.60.0
+streamlit>=1.36.0
+pandas>=2.1.0
+langchain>=0.3.0
+langchain-openai>=0.2.0
+python-dotenv>=1.0.0
