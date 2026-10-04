@@ -1,6 +1,10 @@
 myenv/
 wa_session/
+scraper_session/
+gmaps_session/
+scraped/
 logs/
+cache/
 __pycache__/
 *.pyc
 .env

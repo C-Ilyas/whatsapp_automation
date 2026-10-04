@@ -82,6 +82,46 @@ How it works:
 
 See [sample_recipients.csv](sample_recipients.csv) for the expected shape.
 
+## PagesJaunes scraping
+
+Built-in scraper at [scraper/pagesjaunes.py](scraper/pagesjaunes.py).
+
+**From the UI**: open the **Scrape PagesJaunes** tab on the Streamlit page,
+enter a keyword (+ optional city), pick max pages, optionally paste rotating
+proxies (one URL per line), click **Run scraper**. The scraped table becomes
+your recipient list — proceed to service selection → message generation →
+send.
+
+**From the CLI**:
+```bash
+python -m scraper.pagesjaunes "plombier" --city "Paris" --max-pages 5
+# add proxies:
+python -m scraper.pagesjaunes "plombier" --city Lyon --proxy http://user:pw@p1:8080 --proxy http://user:pw@p2:8080
+```
+
+CSVs are written to `scraped/pj_<keyword>_<timestamp>.csv` with fixed schema:
+`business_name, phone, address, postal_code, city, website, category, rating,
+review_count, business_url, latitude, longitude`.
+
+**Anti-bot measures in place**
+- Persistent Chromium profile (`scraper_session/`).
+- Randomized UA + viewport per session, `fr-FR` locale & Paris timezone.
+- `navigator.webdriver` masking, `--disable-blink-features=AutomationControlled`.
+- Randomized inter-action delays + exponential backoff on retry.
+- CAPTCHA / DataDome / 403 detection → stops cleanly instead of producing
+  garbage rows.
+- Optional rotating proxies via `ScrapeConfig.proxies`.
+
+**Architecture**
+- Browser layer (`PagesJaunesScraper`) — owns the Playwright context, retry,
+  block detection.
+- Extraction layer (`extract_records_from_page`) — pure, selector-driven,
+  with fallback chains per field. Tweak `*_SELECTORS` lists when PagesJaunes
+  changes its DOM.
+- Output layer (`write_csv`) — fixed schema, UTF-8, timestamped filenames,
+  dedup by phone (fallback to name+postal_code), phone normalization,
+  whitespace cleanup, URL validation.
+
 ## Docker
 
 ```bash

@@ -138,37 +138,76 @@ def render_message(template: str, name: str) -> str:
 
 
 
+def _is_syncing(page: Page) -> bool:
+    """Detect the 'Syncing messages...' / 'Loading your chats...' overlay."""
+    try:
+        body = page.inner_text("body", timeout=2000)[:2000].lower()
+    except Exception:
+        return False
+    for phrase in (
+        "syncing messages",
+        "loading your chats",
+        "loading messages",
+        "synchronisation des messages",
+        "chargement de vos discussions",
+    ):
+        if phrase in body:
+            return True
+    return False
+
+
 def wait_for_login(page: Page, logger: logging.Logger, timeout_s: int = 180) -> None:
-    """Wait until the chat list is visible (i.e. user is logged in)."""
+    """Wait until the chat list is visible AND initial sync has finished."""
     page.goto(WA_BASE, wait_until="domcontentloaded")
     logger.info("Waiting for WhatsApp Web to be ready (scan QR if prompted)...")
     deadline = time.time() + timeout_s
+    logged_in = False
     while time.time() < deadline:
-        # Side panel / chat list is a reliable post-login signal.
-        if page.locator('div[id="side"]').count() > 0:
-            logger.info("WhatsApp Web is ready.")
-            return
-        # Or the "Chats" header
-        if page.get_by_role("button", name=re.compile("New chat", re.I)).count() > 0:
-            logger.info("WhatsApp Web is ready.")
-            return
+        if page.locator('div[id="side"]').count() > 0 or \
+           page.get_by_role("button", name=re.compile("New chat", re.I)).count() > 0:
+            logged_in = True
+            break
         time.sleep(1.5)
-    raise RuntimeError("Timed out waiting for WhatsApp Web login.")
+    if not logged_in:
+        raise RuntimeError("Timed out waiting for WhatsApp Web login.")
+
+    # Now wait for sync overlay to clear (it can take 30–60s on a fresh relink).
+    sync_deadline = time.time() + 90
+    waited_sync = False
+    while time.time() < sync_deadline:
+        if not _is_syncing(page):
+            break
+        if not waited_sync:
+            logger.info("Logged in. Waiting for initial sync to finish...")
+            waited_sync = True
+        time.sleep(2.0)
+    logger.info("WhatsApp Web is ready.")
 
 
 def open_chat(page: Page, number: str) -> None:
     page.goto(f"{WA_BASE}/send?phone={number}", wait_until="domcontentloaded")
 
 
+_INVALID_NUMBER_PATTERNS = [
+    re.compile(r"phone number.*invalid", re.I),
+    re.compile(r"isn't on whatsapp", re.I),
+    re.compile(r"is not on whatsapp", re.I),
+    re.compile(r"n'est pas sur whatsapp", re.I),
+    re.compile(r"ce numéro.*invalide", re.I),
+]
+
+
 def _invalid_number_dialog(page: Page) -> bool:
-    # WhatsApp shows a modal: "Phone number shared via url is invalid."
-    try:
-        return page.get_by_text(re.compile("phone number.*invalid", re.I)).count() > 0
-    except Exception:
-        return False
+    for rx in _INVALID_NUMBER_PATTERNS:
+        try:
+            if page.get_by_text(rx).count() > 0:
+                return True
+        except Exception:
+            continue
+    return False
 
 
-def _find_message_box(page: Page, timeout_ms: int = 45_000):
+def _find_message_box(page: Page, timeout_ms: int = 90_000):
     # The composer is a contenteditable footer; pick the last one (message box,
     # not the search box).
     page.wait_for_selector('footer div[contenteditable="true"]', timeout=timeout_ms)
@@ -176,13 +215,21 @@ def _find_message_box(page: Page, timeout_ms: int = 45_000):
     return boxes.last
 
 
+def _dump_state(page: Page, tag: str) -> None:
+    try:
+        LOG_DIR.mkdir(exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        page.screenshot(path=str(LOG_DIR / f"{tag}_{ts}.png"), full_page=True)
+    except Exception:
+        pass
+
+
 def send_message(page: Page, number: str, message: str, logger: logging.Logger) -> tuple[bool, str]:
     open_chat(page, number)
 
-    # Allow brief load; then check for invalid number dialog.
-    for _ in range(20):
+    # Allow up to 60s for invalid-number modal or composer to appear.
+    for _ in range(120):
         if _invalid_number_dialog(page):
-            # dismiss
             try:
                 page.get_by_role("button", name=re.compile("ok", re.I)).first.click()
             except Exception:
@@ -195,6 +242,8 @@ def send_message(page: Page, number: str, message: str, logger: logging.Logger) 
     try:
         box = _find_message_box(page)
     except PWTimeout:
+        _dump_state(page, f"chat_did_not_load_{number}")
+        logger.warning("chat_did_not_load — screenshot saved to logs/")
         return False, "chat_did_not_load"
 
     human_sleep(0.6, 1.6)
@@ -296,6 +345,64 @@ class WhatsAppSender:
 def normalize_number(raw: object) -> str | None:
     digits = re.sub(r"\D", "", str(raw or ""))
     return digits if 7 <= len(digits) <= 15 else None
+
+
+# Per-country mobile-prefix rules.
+#   key: country code (digits)
+#   value: list of digit-strings that, when they immediately follow the
+#          country code, identify a mobile line.
+# Returns True if mobile, False if confidently landline, None if unknown
+# country (don't filter — better safe than dropping the user's only leads).
+MOBILE_PREFIX_RULES: dict[str, tuple[str, ...]] = {
+    "33":  ("6", "7"),                  # France: 06 / 07
+    "34":  ("6", "7"),                  # Spain
+    "39":  ("3",),                      # Italy
+    "44":  ("7",),                      # United Kingdom
+    "49":  ("15", "16", "17"),          # Germany
+    "32":  ("4",),                      # Belgium
+    "31":  ("6",),                      # Netherlands
+    "351": ("9",),                      # Portugal
+    "41":  ("7",),                      # Switzerland
+    "352": ("6",),                      # Luxembourg
+    "213": ("5", "6", "7"),             # Algeria
+    "212": ("6", "7"),                  # Morocco
+    "216": ("2", "5", "9"),             # Tunisia
+    "20":  ("1",),                      # Egypt
+    "971": ("5",),                      # UAE
+    "966": ("5",),                      # Saudi Arabia
+    "965": ("5", "6", "9"),             # Kuwait
+    "974": ("3", "5", "6", "7"),        # Qatar
+    "973": ("3", "6"),                  # Bahrain
+    "968": ("7", "9"),                  # Oman
+    "967": ("7",),                      # Yemen
+    "962": ("7",),                      # Jordan
+    "964": ("7",),                      # Iraq
+    "961": ("3", "7", "8"),             # Lebanon
+    "90":  ("5",),                      # Türkiye
+    "55":  (),                          # Brazil: complex (9 in area-code); skip
+    "1":   (),                          # NANP: no prefix-level distinction
+}
+
+
+def classify_number(number: str) -> tuple[str, str | None]:
+    """Return (country_code, "mobile" | "landline" | None).
+
+    `None` means we can't confidently classify (unknown country, NANP, etc.).
+    """
+    if not number:
+        return "", None
+    # Match the longest known country code first.
+    for cc in sorted(MOBILE_PREFIX_RULES, key=len, reverse=True):
+        if number.startswith(cc):
+            rules = MOBILE_PREFIX_RULES[cc]
+            if not rules:
+                return cc, None  # no rule we trust for this country
+            rest = number[len(cc):]
+            for pfx in rules:
+                if rest.startswith(pfx):
+                    return cc, "mobile"
+            return cc, "landline"
+    return "", None
 
 
 

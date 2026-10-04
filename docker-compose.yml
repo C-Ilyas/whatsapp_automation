@@ -12,9 +12,14 @@ services:
       WA_FORCE_HEADLESS: "true"
     volumes:
       - ./wa_session:/app/wa_session
+      - ./scraper_session:/app/scraper_session
+      - ./gmaps_session:/app/gmaps_session
+      - ./scraped:/app/scraped
       - ./logs:/app/logs
+      - ./cache:/app/cache
       - ./app.py:/app/app.py
       - ./agent.py:/app/agent.py
       - ./send_whatsapp.py:/app/send_whatsapp.py
+      - ./scraper:/app/scraper
     shm_size: "1gb"
     restart: unless-stopped
